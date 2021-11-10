@@ -27,7 +27,7 @@ class Agent(object):
     def feed_context(self, ctx):
         pass
 
-    def read(self, inpt):
+    def read(self, inpt, you=False):
         pass
 
     def write(self):
@@ -37,6 +37,9 @@ class Agent(object):
         pass
 
     def update(self, agree, reward, partner_choice):
+        pass
+
+    def read_silent(self, inpt, you=False):
         pass
 
 
@@ -71,6 +74,12 @@ class RnnAgent(Agent):
         self.ctx_h = self.model.forward_context(Variable(self.ctx))
         self.lang_h = self.model.zero_h(1, self.model.args.nhid_lang)
 
+    def read_silent(self, inpt, you=False):
+        if you:
+            self.sents.append(Variable(self._encode(['YOU:'] + inpt, self.model.word_dict)))
+        else:
+            self.sents.append(Variable(self._encode(['THEM:'] + inpt, self.model.word_dict)))
+    
     def feed_partner_context(self, partner_context):
         pass
 
@@ -78,12 +87,16 @@ class RnnAgent(Agent):
             partner_input=None, max_partner_reward=None):
         pass
 
-    def read(self, inpt):
-        self.sents.append(Variable(self._encode(['THEM:'] + inpt, self.model.word_dict)))
+    def read(self, inpt, you=False):
+        if you:
+            prompt = 'YOU:'
+        else:
+            prompt = 'THEM:'
+        self.sents.append(Variable(self._encode([prompt] + inpt, self.model.word_dict)))
         inpt = self._encode(inpt, self.model.word_dict)
         lang_hs, self.lang_h = self.model.read(Variable(inpt), self.lang_h, self.ctx_h)
         self.lang_hs.append(lang_hs.squeeze(1))
-        self.words.append(self.model.word2var('THEM:').unsqueeze(0))
+        self.words.append(self.model.word2var(prompt).unsqueeze(0))
         self.words.append(Variable(inpt))
         assert (torch.cat(self.words).size(0) == torch.cat(self.lang_hs).size(0))
 
@@ -245,7 +258,7 @@ class HierarchicalAgent(RnnAgent):
 
 
 class RnnRolloutAgent(RnnAgent):
-    def __init__(self, model, args, name='Alice', train=False):
+    def __init__(self, model, args, name='Alice', train=False, diverse=False):
         super(RnnRolloutAgent, self).__init__(model, args, name)
         self.ncandidate = 5
         self.nrollout = 3
@@ -265,8 +278,7 @@ class RnnRolloutAgent(RnnAgent):
             score = 0
             for _ in range(self.nrollout):
                 combined_lang_hs = self.lang_hs + [move_lang_hs]
-                combined_words = self.words + [self.model.word2var('YOU:'), move]
-
+                combined_words = self.words + [self.model.word2var('YOU:').unsqueeze(0), move]
                 if not is_selection:
                     # Complete the conversation with rollout_length samples
                     _, rollout, _, rollout_lang_hs = self.model.write(
@@ -274,12 +286,11 @@ class RnnRolloutAgent(RnnAgent):
                         stop_tokens=['<selection>'], resume=True)
                     combined_lang_hs += [rollout_lang_hs]
                     combined_words += [rollout]
-
                 # Choose items
                 rollout_score = None
 
                 combined_lang_hs = torch.cat(combined_lang_hs)
-                combined_words = torch.cat(combined_words)
+                combined_words = torch.cat(combined_words, dim=0)
                 rollout_choice, _, p_agree = self._choose(combined_lang_hs, combined_words, sample=False)
                 rollout_score = self.domain.score(self.context, rollout_choice)
                 score += p_agree * rollout_score
